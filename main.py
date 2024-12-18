@@ -1,9 +1,12 @@
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import praw
 import json
 import re
 import os
+import random
+import requests
 
 load_dotenv()
 
@@ -11,22 +14,60 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+reddit = praw.Reddit(
+    client_id=os.getenv("REDDIT_CLIENT_ID"),
+    client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
+    user_agent="Fembot/1.0"
+)
+
 with open("custom.json", 'r', encoding='utf-8') as f:
     data = json.load(f)
+    
+allCommands = ["add", "all", "remove", "story", "selfie", "insult", "joke"]
 
-allCommands = ["add", "all", "remove"];
 
+def chatbot(prompt, max_tokens):
+    url = "https://api-inference.huggingface.co/models/gpt2"
+    headers = {"Authorization": "Bearer " + os.getenv('HUGGINGFACE_TOKEN')}
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "max_length": max_tokens,
+            "temperature": 0.8,
+            "top_p": 0.9
+        }
+    }
+    
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code == 200:
+        result = response.json()
+        if result:
+            return result[0]['generated_text']
+        else:
+            return "Brak odpowiedzi w liście"
+    else:
+        return f"Błąd: {response.status_code} - {response.text}"
+    
+    
+def get_random_image(subreddit_name):
+    subreddit = reddit.subreddit(subreddit_name)
+    posts = list(subreddit.new(limit=50))
 
-def add_commands():
-    for command, response in data.items():
-        exec(f"""async def {command}(ctx): await ctx.send("{response}")""")
-        bot.command(name=command)(locals()[command])
+    random.shuffle(posts)
+    for post in posts:
+        if hasattr(post, "url") and (post.url.endswith(".jpg") or post.url.endswith(".png")):
+            return post.url
+
+    return "https://i.redd.it/nq2ztptwnh7e1.jpeg"
 
 
 @bot.event
 async def on_ready():
+    for command, response in data.items():
+        exec(f"""async def {command}(ctx): await ctx.send("{response}")""")
+        bot.command(name=command)(locals()[command])
     print(f'Zalogowano jako {bot.user}')
-    add_commands()
     
     
 @bot.command()
@@ -46,8 +87,19 @@ async def add(ctx, command: str, *args):
 
 @bot.command()
 async def all(ctx, *args):
-    await ctx.send('Oto wszystkie dostępne komendy:\n' + ', '.data.keys())
+    await ctx.send('Oto wszystkie komendy funkcjonalne:\n' + ', '.join(allCommands) + "\nA to wszystkie polecenia dodane oddolnie:\n" + ', '.join(data.keys()))
     
+@bot.command()
+async def story(ctx, *args):
+    await ctx.send(chatbot(" ".join(args), 50)[:1500])
+
+@bot.command()
+async def insult(ctx, *args):
+    await ctx.send(requests.get("https://insult.mattbas.org/api/insult", params={ 'who': " ".join(args) }).text)
+    
+@bot.command()
+async def joke(ctx, *args):
+    await ctx.send(requests.get("https://v2.jokeapi.dev/joke/Dark?type=single").json()["joke"])
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -65,14 +117,19 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
+    found = []
     for key, value in data.items():
         if key.lower() in message.content.lower():
-            await message.channel.send(value)
-            break
+            found.append(value)
+    if found:
+        await message.channel.send(random.choice(found))
     await bot.process_commands(message)
-        
-        
-        
+    
+@bot.command()
+async def selfie(ctx):
+    path = get_random_image("femboy");
+    await ctx.send(content="Oto jedno z moich zdjęć z kolekcji:", embed=discord.Embed().set_image(url=path))    
+
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingRequiredArgument):
